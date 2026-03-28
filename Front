@@ -1,0 +1,704 @@
+using System;
+using System.Drawing;
+using System.Linq;
+using System.Threading;
+using System.Windows.Forms;
+
+namespace MyLab4
+{
+    public partial class MainForm : Form
+    {
+        private readonly WorkerManager workerManager;
+        private FlowLayoutPanel flowPanel;
+        private System.Windows.Forms.Timer uiTimer;
+        private TabControl mainTabControl;
+        private DataGridView dgvDataExchange;
+        private ComboBox cbDataType;
+        private TextBox txtBroadcastMessage;
+
+        public MainForm()
+        {
+            InitializeComponent();
+            workerManager = new WorkerManager();
+
+            workerManager.OnWorkerStateChanged += OnWorkerStateChanged;
+            workerManager.OnWorkerCounterChanged += OnWorkerCounterChanged;
+            workerManager.OnDataReceived += OnDataExchange;
+            workerManager.OnDataSent += OnDataExchange;
+            workerManager.OnWorkerPriorityChanged += OnWorkerPriorityChanged;
+        }
+
+        private void InitializeComponent()
+        {
+            this.Text = "Многопоточное управление";
+            this.Size = new System.Drawing.Size(1200, 800);
+            this.StartPosition = FormStartPosition.CenterScreen;
+            this.FormClosing += MainForm_FormClosing;
+
+            mainTabControl = new TabControl
+            {
+                Location = new System.Drawing.Point(10, 10),
+                Size = new System.Drawing.Size(1160, 740),
+                Dock = DockStyle.Fill
+            };
+
+            var tabWorkers = new TabPage("Управление потоками");
+            InitializeWorkersTab(tabWorkers);
+
+            var tabDataExchange = new TabPage("Обмен данными");
+            InitializeDataExchangeTab(tabDataExchange);
+
+            mainTabControl.TabPages.Add(tabWorkers);
+            mainTabControl.TabPages.Add(tabDataExchange);
+            this.Controls.Add(mainTabControl);
+
+            uiTimer = new System.Windows.Forms.Timer { Interval = 500 };
+            uiTimer.Tick += UiTimer_Tick;
+            uiTimer.Start();
+        }
+
+        private void InitializeWorkersTab(TabPage tab)
+        {
+            tab.BackColor = System.Drawing.Color.WhiteSmoke;
+
+            var buttonPanel = new Panel
+            {
+                Location = new System.Drawing.Point(20, 20),
+                Size = new System.Drawing.Size(1100, 45),
+                AutoSize = false
+            };
+
+            var btnCreateWorker = new Button
+            {
+                Text = "➕ Создать поток",
+                Location = new System.Drawing.Point(0, 0),
+                Size = new System.Drawing.Size(120, 35),
+                BackColor = System.Drawing.Color.LightGreen
+            };
+            btnCreateWorker.Click += (s, e) => workerManager.CreateWorker();
+
+            var btnStopAll = new Button
+            {
+                Text = "⏹ Остановить все",
+                Location = new System.Drawing.Point(130, 0),
+                Size = new System.Drawing.Size(120, 35),
+                BackColor = System.Drawing.Color.LightCoral
+            };
+            btnStopAll.Click += (s, e) => workerManager.StopAllWorkers();
+
+            var btnPauseAll = new Button
+            {
+                Text = "⏸ Пауза все",
+                Location = new System.Drawing.Point(260, 0),
+                Size = new System.Drawing.Size(120, 35),
+                BackColor = System.Drawing.Color.LightYellow
+            };
+            btnPauseAll.Click += (s, e) => workerManager.PauseAllWorkers();
+
+            var btnResumeAll = new Button
+            {
+                Text = "▶ Возобновить все",
+                Location = new System.Drawing.Point(390, 0),
+                Size = new System.Drawing.Size(120, 35),
+                BackColor = System.Drawing.Color.LightBlue
+            };
+            btnResumeAll.Click += (s, e) => workerManager.ResumeAllWorkers();
+
+            var lblGlobalSpeed = new Label
+            {
+                Text = "Глобальная скорость:",
+                Location = new System.Drawing.Point(520, 8),
+                Size = new System.Drawing.Size(120, 20)
+            };
+
+            var nudGlobalSpeed = new NumericUpDown
+            {
+                Location = new System.Drawing.Point(645, 5),
+                Size = new System.Drawing.Size(80, 25),
+                Minimum = 10,
+                Maximum = 500,
+                Value = 50,
+                Increment = 10
+            };
+            nudGlobalSpeed.ValueChanged += (s, e) =>
+                workerManager.SetGlobalSpeed((int)nudGlobalSpeed.Value);
+
+            buttonPanel.Controls.AddRange(new Control[] {
+                btnCreateWorker, btnStopAll, btnPauseAll, btnResumeAll,
+                lblGlobalSpeed, nudGlobalSpeed
+            });
+
+            var scrollPanel = new Panel
+            {
+                Location = new System.Drawing.Point(20, 75),
+                Size = new System.Drawing.Size(1100, 630),
+                AutoScroll = true,
+                AutoScrollMinSize = new Size(0, 0),
+                BorderStyle = BorderStyle.Fixed3D,
+                HorizontalScroll = 
+                {
+                    Enabled = false,
+                    Visible = false
+                },
+                VerticalScroll = 
+                {
+                    Enabled = true,
+                    Visible = true
+                }
+            };
+
+            flowPanel = new FlowLayoutPanel
+            {
+                Location = new System.Drawing.Point(0, 0),
+                Size = new System.Drawing.Size(1070, 0),
+                AutoScroll = false,
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink
+            };
+
+            scrollPanel.Controls.Add(flowPanel);
+
+            tab.Controls.AddRange(new Control[] {
+                buttonPanel, scrollPanel
+            });
+        }
+
+        private void InitializeDataExchangeTab(TabPage tab)
+        {
+            tab.BackColor = System.Drawing.Color.WhiteSmoke;
+
+            var sendPanel = new Panel
+            {
+                Location = new System.Drawing.Point(20, 20),
+                Size = new System.Drawing.Size(1100, 100),
+                BackColor = System.Drawing.Color.LightBlue,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+
+            // Выбор типа данных (только Число и Команда)
+            cbDataType = new ComboBox
+            {
+                Location = new System.Drawing.Point(10, 15),
+                Size = new System.Drawing.Size(100, 25),
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            cbDataType.Items.AddRange(new object[] { "Число", "Команда" });
+            cbDataType.SelectedIndex = 0;
+
+            // Текстовое поле для ввода данных
+            txtBroadcastMessage = new TextBox
+            {
+                Location = new System.Drawing.Point(120, 15),
+                Size = new System.Drawing.Size(400, 25),
+                Text = "5"
+            };
+
+            // Кнопка отправки всем
+            var btnSendAll = new Button
+            {
+                Text = "📤 Отправить всем",
+                Location = new System.Drawing.Point(10, 50),
+                Size = new System.Drawing.Size(120, 35),
+                BackColor = System.Drawing.Color.LightGreen
+            };
+            btnSendAll.Click += (s, e) =>
+            {
+                string dataType = cbDataType.SelectedItem.ToString();
+                string data = txtBroadcastMessage.Text;
+                
+                if (dataType == "Число")
+                {
+                    if (!int.TryParse(data, out int number))
+                    {
+                        MessageBox.Show("Пожалуйста, введите корректное число!", "Ошибка", 
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                }
+                
+                workerManager.SendDataToAllWorkers(dataType, data);
+            };
+
+            var lblInfo = new Label
+            {
+                Text = "💡 Команды: status - получить статус, reset - сбросить счетчик | Числа умножаются на 2",
+                Location = new System.Drawing.Point(150, 60),
+                Size = new System.Drawing.Size(500, 20),
+                Font = new System.Drawing.Font("Segoe UI", 8),
+                ForeColor = System.Drawing.Color.Gray
+            };
+
+            sendPanel.Controls.AddRange(new Control[] {
+                cbDataType, txtBroadcastMessage, btnSendAll, lblInfo
+            });
+
+            dgvDataExchange = new DataGridView
+            {
+                Location = new System.Drawing.Point(20, 130),
+                Size = new System.Drawing.Size(1100, 570),
+                ReadOnly = true,
+                AllowUserToAddRows = false,
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+                BackgroundColor = System.Drawing.Color.White,
+                ScrollBars = ScrollBars.Both
+            };
+
+            dgvDataExchange.Columns.Add("Time", "Время");
+            dgvDataExchange.Columns.Add("WorkerId", "Поток ID");
+            dgvDataExchange.Columns.Add("Direction", "Направление");
+            dgvDataExchange.Columns.Add("DataType", "Тип");
+            dgvDataExchange.Columns.Add("Data", "Данные");
+
+            tab.Controls.AddRange(new Control[] { sendPanel, dgvDataExchange });
+        }
+
+        private void OnWorkerStateChanged(int workerId, WorkerState state)
+        {
+            this.Invoke(new Action(() =>
+            {
+                var control = FindWorkerControl(workerId);
+                if (control != null)
+                {
+                    control.UpdateState(state);
+                }
+            }));
+        }
+
+        private void OnWorkerCounterChanged(int workerId, int counter)
+        {
+            this.Invoke(new Action(() =>
+            {
+                var control = FindWorkerControl(workerId);
+                if (control != null)
+                {
+                    control.UpdateCounter(counter);
+                }
+            }));
+        }
+
+        private void OnWorkerPriorityChanged(int workerId, ThreadPriority priority)
+        {
+            this.Invoke(new Action(() =>
+            {
+                var control = FindWorkerControl(workerId);
+                if (control != null)
+                {
+                    control.UpdatePriorityFromEvent(priority);
+                }
+            }));
+        }
+
+        private void OnDataExchange(int workerId, DataMessage message)
+        {
+            this.Invoke(new Action(() =>
+            {
+                string direction = message.DataType == "Ответ" ? "Дочерний → Родитель" : "Родитель → Дочерний";
+                dgvDataExchange.Rows.Insert(0,
+                    DateTime.Now.ToString("HH:mm:ss"),
+                    workerId,
+                    direction,
+                    message.DataType,
+                    message.Content);
+
+                while (dgvDataExchange.Rows.Count > 100)
+                {
+                    dgvDataExchange.Rows.RemoveAt(dgvDataExchange.Rows.Count - 1);
+                }
+            }));
+        }
+
+        private void UiTimer_Tick(object sender, EventArgs e)
+        {
+            workerManager.CleanupDeadWorkers();
+
+            var existingControls = flowPanel.Controls.Cast<WorkerControl>().ToList();
+            var currentWorkers = workerManager.GetAllWorkers();
+
+            foreach (var control in existingControls)
+            {
+                if (!currentWorkers.Any(w => w.Id == control.WorkerId))
+                {
+                    flowPanel.Controls.Remove(control);
+                    control.Dispose();
+                }
+            }
+
+            foreach (var workerInfo in currentWorkers)
+            {
+                if (!existingControls.Any(c => c.WorkerId == workerInfo.Id))
+                {
+                    var control = new WorkerControl(workerInfo, workerManager);
+                    flowPanel.Controls.Add(control);
+                }
+            }
+            
+            flowPanel.Height = flowPanel.Controls.Count * 105;
+        }
+
+        private WorkerControl FindWorkerControl(int workerId)
+        {
+            foreach (WorkerControl control in flowPanel.Controls)
+            {
+                if (control.WorkerId == workerId)
+                    return control;
+            }
+            return null;
+        }
+
+        private void MainForm_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            uiTimer?.Stop();
+            workerManager.Shutdown();
+        }
+    }
+
+    public class WorkerControl : UserControl
+    {
+        private readonly WorkerInfo workerInfo;
+        private readonly WorkerManager workerManager;
+        private Label lblTitle;
+        private Label lblCounter;
+        private Label lblState;
+        private ComboBox cbPriority;
+        private Button btnPause;
+        private Button btnStop;
+        private Button btnResume;
+        private Button btnClone;
+        private TextBox txtSendData;
+        private ComboBox cbSendDataType;
+        private System.Windows.Forms.Timer updateTimer;
+        private bool isUpdatingFromCode = false;
+        private bool isDisposing = false;
+        private bool isPriorityChanging = false;
+
+        public int WorkerId => workerInfo.Id;
+
+        public WorkerControl(WorkerInfo info, WorkerManager manager)
+        {
+            workerInfo = info;
+            workerManager = manager;
+            InitializeComponent();
+            UpdateState(workerInfo.State);
+            UpdateCounter(workerInfo.CurrentCounter);
+
+            cbPriority.SelectedIndexChanged += (s, e) =>
+            {
+                if (isUpdatingFromCode || isPriorityChanging) return;
+                
+                if (workerManager.IsWorkerAlive(workerInfo.Id) && cbPriority.SelectedIndex >= 0)
+                {
+                    isPriorityChanging = true;
+                    workerManager.SetWorkerPriority(workerInfo.Id, (ThreadPriority)cbPriority.SelectedIndex);
+                    isPriorityChanging = false;
+                }
+            };
+
+            updateTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+            updateTimer.Tick += (s, e) =>
+            {
+                if (isDisposing) return;
+                
+                try
+                {
+                    if (this.IsHandleCreated && workerManager.IsWorkerAlive(workerInfo.Id))
+                    {
+                        if (!isPriorityChanging)
+                        {
+                            UpdatePriorityDisplay();
+                        }
+                    }
+                    else if (!workerManager.IsWorkerAlive(workerInfo.Id))
+                    {
+                        DisableControls();
+                        updateTimer.Stop();
+                    }
+                }
+                catch (ObjectDisposedException)
+                {
+                    updateTimer.Stop();
+                }
+            };
+            updateTimer.Start();
+        }
+
+        private void InitializeComponent()
+        {
+            this.Size = new System.Drawing.Size(1050, 100);
+            this.BorderStyle = BorderStyle.FixedSingle;
+            this.BackColor = Color.White;
+            this.Margin = new Padding(5);
+
+            lblTitle = new Label
+            {
+                Text = $"Поток #{workerInfo.Id}",
+                Location = new Point(10, 10),
+                Size = new Size(80, 25),
+                Font = new Font("Segoe UI", 10, FontStyle.Bold)
+            };
+
+            lblCounter = new Label
+            {
+                Text = "0",
+                Location = new Point(100, 10),
+                Size = new Size(60, 25),
+                Font = new Font("Segoe UI", 12, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleCenter,
+                BackColor = Color.LightGray,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+
+            lblState = new Label
+            {
+                Location = new Point(180, 12),
+                Size = new Size(100, 20),
+                Font = new Font("Segoe UI", 9)
+            };
+
+            var lblPriority = new Label
+            {
+                Text = "Приоритет:",
+                Location = new Point(290, 12),
+                Size = new Size(60, 20)
+            };
+
+            cbPriority = new ComboBox
+            {
+                Location = new Point(355, 9),
+                Size = new Size(100, 25),
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            cbPriority.Items.AddRange(new object[] { "Lowest", "BelowNormal", "Normal", "AboveNormal", "Highest" });
+            cbPriority.SelectedIndex = (int)workerInfo.Priority;
+
+            btnPause = new Button
+            {
+                Text = "⏸ Пауза",
+                Location = new Point(470, 9),
+                Size = new Size(70, 25),
+                BackColor = Color.LightYellow
+            };
+            btnPause.Click += (s, e) => workerManager.PauseWorker(workerInfo.Id);
+
+            btnResume = new Button
+            {
+                Text = "▶ Возобн",
+                Location = new Point(545, 9),
+                Size = new Size(70, 25),
+                BackColor = Color.LightBlue,
+                Enabled = false
+            };
+            btnResume.Click += (s, e) => workerManager.ResumeWorker(workerInfo.Id);
+
+            btnStop = new Button
+            {
+                Text = "⏹ Стоп",
+                Location = new Point(620, 9),
+                Size = new Size(70, 25),
+                BackColor = Color.LightCoral
+            };
+            btnStop.Click += (s, e) => workerManager.StopWorker(workerInfo.Id);
+
+            btnClone = new Button
+            {
+                Text = "📋 Клон",
+                Location = new Point(695, 9),
+                Size = new Size(70, 25),
+                BackColor = Color.LightGray
+            };
+            btnClone.Click += (s, e) => workerManager.CloneWorker(workerInfo.Id);
+
+            var sendPanel = new Panel
+            {
+                Location = new Point(10, 45),
+                Size = new Size(1030, 45),
+                BackColor = Color.LightCyan
+            };
+
+            // Число и Команда для отправки
+            cbSendDataType = new ComboBox
+            {
+                Location = new Point(10, 10),
+                Size = new Size(80, 25),
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            cbSendDataType.Items.AddRange(new object[] { "Число", "Команда" });
+            cbSendDataType.SelectedIndex = 0;
+
+            txtSendData = new TextBox
+            {
+                Location = new Point(100, 10),
+                Size = new Size(200, 25),
+                Text = "5"
+            };
+
+            var btnSend = new Button
+            {
+                Text = "Отправить",
+                Location = new Point(310, 9),
+                Size = new Size(80, 25),
+                BackColor = Color.LightGreen
+            };
+            btnSend.Click += (s, e) =>
+            {
+                string dataType = cbSendDataType.SelectedItem.ToString();
+                string data = txtSendData.Text;
+                
+                if (dataType == "Число")
+                {
+                    if (!int.TryParse(data, out int number))
+                    {
+                        MessageBox.Show("Введите корректное число!", "Ошибка", 
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                }
+                
+                workerManager.SendDataToWorker(workerInfo.Id, dataType, data);
+            };
+
+            sendPanel.Controls.AddRange(new Control[] { cbSendDataType, txtSendData, btnSend });
+
+            this.Controls.AddRange(new Control[] {
+                lblTitle, lblCounter, lblState, lblPriority, cbPriority,
+                btnPause, btnResume, btnStop, btnClone, sendPanel
+            });
+        }
+
+        public void UpdateCounter(int counter)
+        {
+            if (this.InvokeRequired)
+            {
+                this.Invoke(new Action(() => UpdateCounter(counter)));
+                return;
+            }
+            lblCounter.Text = counter.ToString();
+            if (counter < 30)
+                lblCounter.BackColor = Color.LightGreen;
+            else if (counter < 70)
+                lblCounter.BackColor = Color.LightYellow;
+            else
+                lblCounter.BackColor = Color.LightCoral;
+        }
+
+        public void UpdateState(WorkerState state)
+        {
+            if (this.InvokeRequired)
+            {
+                this.Invoke(new Action(() => UpdateState(state)));
+                return;
+            }
+
+            switch (state)
+            {
+                case WorkerState.Running:
+                    lblState.Text = "▶ Выполняется";
+                    lblState.ForeColor = Color.Green;
+                    btnPause.Enabled = true;
+                    btnResume.Enabled = false;
+                    btnStop.Enabled = true;
+                    btnClone.Enabled = true;
+                    this.BackColor = Color.White;
+                    break;
+                case WorkerState.Paused:
+                    lblState.Text = "⏸ На паузе";
+                    lblState.ForeColor = Color.Orange;
+                    btnPause.Enabled = false;
+                    btnResume.Enabled = true;
+                    btnStop.Enabled = true;
+                    btnClone.Enabled = true;
+                    this.BackColor = Color.LightYellow;
+                    break;
+                case WorkerState.Stopping:
+                    lblState.Text = "⏹ Остановка...";
+                    lblState.ForeColor = Color.Red;
+                    btnPause.Enabled = false;
+                    btnResume.Enabled = false;
+                    btnStop.Enabled = false;
+                    btnClone.Enabled = false;
+                    this.BackColor = Color.LightGray;
+                    break;
+                case WorkerState.Stopped:
+                    lblState.Text = "⏹ Остановлен";
+                    lblState.ForeColor = Color.DarkRed;
+                    btnPause.Enabled = false;
+                    btnResume.Enabled = false;
+                    btnStop.Enabled = false;
+                    btnClone.Enabled = false;
+                    this.BackColor = Color.LightGray;
+                    break;
+            }
+        }
+
+        public void UpdatePriorityFromEvent(ThreadPriority priority)
+        {
+            if (this.InvokeRequired)
+            {
+                this.Invoke(new Action(() => UpdatePriorityFromEvent(priority)));
+                return;
+            }
+
+            if (!isPriorityChanging)
+            {
+                isUpdatingFromCode = true;
+                cbPriority.SelectedIndex = (int)priority;
+                isUpdatingFromCode = false;
+            }
+        }
+
+        private void UpdatePriorityDisplay()
+        {
+            if (this.InvokeRequired)
+            {
+                this.Invoke(new Action(UpdatePriorityDisplay));
+                return;
+            }
+
+            try
+            {
+                var info = workerManager.GetWorkerInfo(workerInfo.Id);
+                if (info != null && info.IsAlive)
+                {
+                    int currentPriority = (int)info.Priority;
+                    if (cbPriority.SelectedIndex != currentPriority && !isPriorityChanging)
+                    {
+                        isUpdatingFromCode = true;
+                        cbPriority.SelectedIndex = currentPriority;
+                        isUpdatingFromCode = false;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"UpdatePriorityDisplay error: {ex.Message}");
+            }
+        }
+
+        private void DisableControls()
+        {
+            if (this.InvokeRequired)
+            {
+                this.Invoke(new Action(DisableControls));
+                return;
+            }
+
+            if (cbPriority != null) cbPriority.Enabled = false;
+            if (btnPause != null) btnPause.Enabled = false;
+            if (btnStop != null) btnStop.Enabled = false;
+            if (btnResume != null) btnResume.Enabled = false;
+            if (btnClone != null) btnClone.Enabled = false;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            isDisposing = true;
+            if (disposing)
+            {
+                updateTimer?.Stop();
+                updateTimer?.Dispose();
+            }
+            base.Dispose(disposing);
+        }
+    }
+}
